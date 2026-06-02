@@ -616,7 +616,7 @@
 
       <div class="panel info-panel">
         <h3 style="margin-top: 0;">💾 保存先とバックアップ</h3>
-        <p class="small-note">現在の保存先: <span id="backend-label" class="backend-pill">localStorage</span></p>
+        <p class="small-note">現在の保存先: <span id="backend-label" class="backend-pill">localStorage</span> ・ <span id="app-version" class="small-note"></span></p>
         <p id="storage-usage" class="small-note storage-note">保存容量: 計算中...</p>
         <div style="display:flex; gap:8px; flex-wrap:wrap; margin-bottom:10px;">
           <button onclick="handleMigrateToIdb()" class="btn btn-secondary" style="flex:1; min-width:200px;">🚀 IndexedDBへ移行（容量制限を解除）</button>
@@ -637,17 +637,17 @@
       <div class="panel">
         <h3 style="margin-top: 0;">登録済み単語 <span id="total-words">0</span>件</h3>
         <div class="filters">
-          <input type="search" id="search-input" class="filter-search" placeholder="単語・意味で検索" oninput="renderVocabList()">
-          <select id="status-filter" onchange="renderVocabList()">
+          <input type="search" id="search-input" class="filter-search" placeholder="単語・意味・例文・ヒントで検索" oninput="resetListPaging()">
+          <select id="status-filter" onchange="resetListPaging()">
             <option value="all">全状態</option>
             <option value="new">new</option>
             <option value="learning">learning</option>
             <option value="review">review</option>
           </select>
-          <select id="cefr-filter" onchange="renderVocabList()">
+          <select id="cefr-filter" onchange="resetListPaging()">
             <option value="all">全CEFR</option>
           </select>
-          <select id="importance-filter" onchange="renderVocabList()">
+          <select id="importance-filter" onchange="resetListPaging()">
             <option value="all">全重要度</option>
             <option value="5">重要度 5</option>
             <option value="4">重要度 4</option>
@@ -659,12 +659,13 @@
 
         <div id="bulk-actions" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; padding: 10px; background: var(--bg); border-radius: 8px; border: 1px solid var(--border);">
           <label style="display: flex; align-items: center; gap: 8px; font-weight: bold; font-size: 14px; cursor: pointer; color: var(--text-main);">
-            <input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this)" style="width: 16px; height: 16px; cursor: pointer;"> 全て選択
+            <input type="checkbox" id="select-all-cb" onchange="toggleSelectAll(this)" style="width: 16px; height: 16px; cursor: pointer;"> 表示中をすべて選択
           </label>
           <button onclick="deleteSelectedCards()" class="btn btn-danger" style="padding: 6px 12px; font-size: 12px;">🗑️ 選択した単語を削除</button>
         </div>
 
         <ul id="vocab-list"></ul>
+        <div id="list-more" style="text-align: center; margin-top: 10px;"></div>
       </div>
     </div>
 
@@ -797,6 +798,10 @@
     const WEEKLY_GOAL_KEY = 'memoria_pro_weekly_goal';
     const BACKUP_SCHEMA = 'memoria_pro_backup_v1';
 
+    // アプリ識別（画面表示・バックアップへの記録に使用）
+    const APP_NAME = 'Memoria Pro';
+    const APP_VERSION = '1.0';
+
     // Lite版（旧共有）データの読み取り元キー。取り込み（移行）専用で、Proがここへ書き込むことはない。
     const LEGACY_STORAGE_KEY = 'my_vocab_cards';
     const LEGACY_ACTIVITY_KEY = 'my_vocab_activity';
@@ -820,11 +825,13 @@
     // 直近の評価をどこまで遡るか。用途が違うため値も別（マジックナンバー化を避けて明示）。
     const WEAK_RECENT_WINDOW = 4;     // isWeakCard: 直近この件数で誤答(forgot/hard)が2件以上なら苦手扱い
     const TUNING_RECENT_WINDOW = 6;   // AIへ渡す直近評価の最大件数（チューニング用の参考情報）
+    const LIST_PAGE_SIZE = 100;       // 単語一覧の1回あたり表示件数（「さらに表示」で継ぎ足す）
 
     let learningQueue = [];
     let currentIndex = 0;
     let currentCard = null;
     let editingCardId = null;
+    let listVisibleCount = LIST_PAGE_SIZE;  // 現在の一覧表示上限（フィルタ変更でリセット、さらに表示で増加）
     let sessionInitialCount = 0;
     let sessionRequeuedCount = 0;
     let isEvaluating = false; // 連打による二重評価を防ぐ
@@ -1416,6 +1423,8 @@
     window.onload = async () => {
       await Store.init();
       await ensureSchema();
+      const versionEl = document.getElementById('app-version');
+      if (versionEl) versionEl.textContent = `${APP_NAME} v${APP_VERSION}`;
       populateCefrFilter();
       renderVocabList();
       updateDashboard();
@@ -1426,7 +1435,7 @@
       if ('speechSynthesis' in window) {
         speechSynthesis.getVoices();
         // 一部ブラウザはボイスを非同期ロードするため、更新時に取り直して暖機しておく
-        speechSynthesis.addEventListener('voiceschanged', () => { speechSynthesis.getVoices(); });
+        onVoicesChanged(() => { speechSynthesis.getVoices(); });
       }
     };
 
@@ -1453,6 +1462,7 @@
       if (tabId === 'tab-dashboard') updateDashboard();
       if (tabId === 'tab-list') {
         populateCefrFilter();
+        listVisibleCount = LIST_PAGE_SIZE;   // 一覧を開くたび先頭から表示
         renderVocabList();
         updateStorageDisplay();
       }
@@ -1660,6 +1670,19 @@
       document.getElementById('card-aihint').style.display = currentCard.aiHint ? 'block' : 'none';
     }
 
+    // voiceschanged を addEventListener / onvoiceschanged 両対応で登録する小さな保険。
+    // 戻り値は解除用関数（解除不能な環境では何もしない関数を返す）。
+    function onVoicesChanged(handler) {
+      if (!('speechSynthesis' in window)) return () => {};
+      if (typeof speechSynthesis.addEventListener === 'function') {
+        speechSynthesis.addEventListener('voiceschanged', handler);
+        return () => speechSynthesis.removeEventListener('voiceschanged', handler);
+      }
+      // 旧API：onvoiceschanged は1つしか保持できないが、保険として登録する
+      speechSynthesis.onvoiceschanged = handler;
+      return () => { if (speechSynthesis.onvoiceschanged === handler) speechSynthesis.onvoiceschanged = null; };
+    }
+
     // 英語ボイスは非同期ロードのことがある。利用可能なら明示的に英語ボイスを選ぶ。
     function pickEnglishVoice() {
       if (!('speechSynthesis' in window)) return null;
@@ -1689,22 +1712,20 @@
       const word = currentCard.word;
       const voices = speechSynthesis.getVoices() || [];
 
-      // 初回クリックでボイス未ロードなら、voiceschanged を一度だけ待ってから読み上げる。
+      // 初回クリックでボイス未ロードなら、voiceschanged を待ってから読み上げる。
       // それでも発火しないブラウザ向けに、lang 指定のみで即時にも試す。
       if (voices.length === 0) {
         let spoken = false;
-        const onVoices = () => {
+        let off = () => {};
+        const speakOnce = () => {
           if (spoken) return;
           spoken = true;
+          off();                 // 登録した voiceschanged を解除
           speakUtterance(word);
         };
-        speechSynthesis.addEventListener('voiceschanged', onVoices, { once: true });
+        off = onVoicesChanged(speakOnce);   // addEventListener / onvoiceschanged 両対応
         // フォールバック：voiceschanged が来ないブラウザでも一応読み上げる
-        setTimeout(() => {
-          if (spoken) return;
-          spoken = true;
-          speakUtterance(word);
-        }, 250);
+        setTimeout(speakOnce, 250);
         return;
       }
 
@@ -2038,7 +2059,9 @@
       });
     }
 
-    // AIは「パラメータ」だけ調整。日付は受け取らず、SM-2の素のintervalから再計算する。
+    // AIは「パラメータ」だけ調整する。
+    // nextReviewDate はここでは変更しない。
+    // efactor / intervalModifier は次回評価時に scheduleFrom() 経由で反映される。
     async function applyTuning() {
       const raw = document.getElementById('tuning-response').value;
       if (!raw.trim()) {
@@ -2061,22 +2084,37 @@
           const card = byId.get(String(adj.id));
           if (!card) { notFound.push(String(adj.id)); return; }
 
+          // 実際に値が反映されたかを記録（id一致でも中身が空なら「適用」に数えない）
+          let changed = false;
+
           if (adj.newEfactor !== undefined && adj.newEfactor !== null) {
             card.efactor = clampNumber(adj.newEfactor, EFACTOR_MIN, EFACTOR_MAX, card.efactor);
+            changed = true;
           }
           if (adj.intervalModifier !== undefined && adj.intervalModifier !== null) {
             card.intervalModifier = clampNumber(adj.intervalModifier, MODIFIER_MIN, MODIFIER_MAX, card.intervalModifier);
+            changed = true;
           }
           if (typeof adj.aiHint === 'string' && adj.aiHint.trim()) {
             card.aiHint = adj.aiHint.trim().slice(0, AI_HINT_MAX_LENGTH);
+            changed = true;
           }
 
           // nextReviewDate はここでは触らない。
           // efactor / intervalModifier は次回評価時に scheduleFrom() 経由で自然に反映される。
           // （即時再計算すると、経過済みの待ち時間を捨てて予定が後ろ倒しになる副作用があるため）
 
-          applied++;
+          // id は合うが調整値が一つもなければ no-op。適用には数えず invalid として扱う。
+          if (changed) applied++;
+          else invalid++;
         });
+
+        // 何も適用できなければ保存・再描画を省略（結果だけ表示）
+        if (applied === 0) {
+          showTuningResult({ applied, invalid, notFound });
+          showToast('適用できる調整項目はありませんでした。');
+          return;
+        }
 
         const ok = await Store.replaceAll(cards);
         if (!ok) return;
@@ -2143,20 +2181,34 @@
       select.value = values.includes(currentValue) ? currentValue : 'all';
     }
 
+    // フィルタ・検索の変更時は先頭(LIST_PAGE_SIZE件)に戻す
+    function resetListPaging() {
+      listVisibleCount = LIST_PAGE_SIZE;
+      renderVocabList();
+    }
+
+    // 「さらに表示」: 表示上限を1ページ分増やして再描画
+    function showMoreVocab() {
+      listVisibleCount += LIST_PAGE_SIZE;
+      renderVocabList();
+    }
+
     function renderVocabList() {
       const cards = getValidCards();
       document.getElementById('total-words').textContent = cards.length;
 
-      const searchTerm = (document.getElementById('search-input')?.value || '').trim().toLowerCase();
+      // 検索は重複判定と同じ normalizeKeyText で正規化（全角/半角・余分な空白・大文字小文字のゆれを吸収）
+      const searchTerm = normalizeKeyText(document.getElementById('search-input')?.value || '');
       const statusFilter = document.getElementById('status-filter')?.value || 'all';
       const cefrFilter = document.getElementById('cefr-filter')?.value || 'all';
       const importanceFilter = document.getElementById('importance-filter')?.value || 'all';
 
       const filteredCards = cards.filter(card => {
         const matchesSearch = !searchTerm ||
-          String(card.word || '').toLowerCase().includes(searchTerm) ||
-          String(card.meaning || '').toLowerCase().includes(searchTerm) ||
-          String(card.example || '').toLowerCase().includes(searchTerm);
+          normalizeKeyText(card.word).includes(searchTerm) ||
+          normalizeKeyText(card.meaning).includes(searchTerm) ||
+          normalizeKeyText(card.example).includes(searchTerm) ||
+          normalizeKeyText(card.aiHint).includes(searchTerm);
 
         const matchesStatus = statusFilter === 'all' || card.status === statusFilter;
         const matchesCefr = cefrFilter === 'all' || card.cefr === cefrFilter;
@@ -2165,24 +2217,75 @@
         return matchesSearch && matchesStatus && matchesCefr && matchesImportance;
       });
 
+      // 再描画でチェック状態が消えないよう、現在の選択（表示中のみ）を退避して復元する
+      const checkedIds = new Set(
+        Array.from(document.querySelectorAll('.bulk-cb:checked')).map(cb => cb.value)
+      );
+
       const listElement = document.getElementById('vocab-list');
+      const moreElement = document.getElementById('list-more');
       listElement.textContent = '';
+      if (moreElement) moreElement.textContent = '';
 
       if (filteredCards.length === 0) {
         const empty = document.createElement('p');
         empty.className = 'small-note';
         empty.textContent = '表示できる単語がありません。';
         listElement.appendChild(empty);
-      } else {
-        filteredCards.forEach(card => {
-          listElement.appendChild(
-            editingCardId === card.id ? createEditListItem(card) : createViewListItem(card)
-          );
-        });
+        const selectAllCb = document.getElementById('select-all-cb');
+        if (selectAllCb) selectAllCb.checked = false;
+        return;
       }
 
+      const total = filteredCards.length;
+      const visible = filteredCards.slice(0, listVisibleCount);
+
+      visible.forEach(card => {
+        listElement.appendChild(
+          editingCardId === card.id ? createEditListItem(card) : createViewListItem(card)
+        );
+      });
+
+      // 退避したチェック状態を復元（表示されているカードのみ反映される）
+      listElement.querySelectorAll('.bulk-cb').forEach(cb => {
+        cb.checked = checkedIds.has(cb.value);
+      });
+
+      // 「さらに表示」または「全件表示中」の案内
+      if (moreElement) {
+        if (total > visible.length) {
+          const remaining = total - visible.length;
+          const info = document.createElement('p');
+          info.className = 'small-note';
+          info.style.marginBottom = '6px';
+          info.textContent = `表示中 ${visible.length} / 該当 ${total}件`;
+
+          const btn = document.createElement('button');
+          btn.className = 'btn btn-muted';
+          btn.style.width = '100%';
+          btn.textContent = `さらに表示（残り ${remaining}件）`;
+          btn.onclick = showMoreVocab;
+
+          moreElement.appendChild(info);
+          moreElement.appendChild(btn);
+        } else if (total > LIST_PAGE_SIZE) {
+          const info = document.createElement('p');
+          info.className = 'small-note';
+          info.textContent = `全 ${total}件を表示中`;
+          moreElement.appendChild(info);
+        }
+      }
+
+      // 「表示中をすべて選択」の状態は、表示中の全チェックが入っているかに同期
+      syncSelectAllState();
+    }
+
+    // 表示中の .bulk-cb がすべてチェック済みかどうかを「表示中をすべて選択」に反映する
+    function syncSelectAllState() {
       const selectAllCb = document.getElementById('select-all-cb');
-      if (selectAllCb) selectAllCb.checked = false;
+      if (!selectAllCb) return;
+      const boxes = document.querySelectorAll('#vocab-list .bulk-cb');
+      selectAllCb.checked = boxes.length > 0 && Array.from(boxes).every(cb => cb.checked);
     }
 
     function createViewListItem(card) {
@@ -2197,6 +2300,8 @@
       cb.className = 'bulk-cb';
       cb.value = card.id;
       cb.style.cssText = 'width:18px; height:18px; cursor:pointer;';
+      // 個別チェックの変更時に「表示中をすべて選択」を即同期する（再描画を待たない）
+      cb.onchange = syncSelectAllState;
       checkWrap.appendChild(cb);
 
       const textContainer = document.createElement('div');
@@ -2407,7 +2512,7 @@
     }
 
     function toggleSelectAll(checkbox) {
-      document.querySelectorAll('.bulk-cb').forEach(cb => cb.checked = checkbox.checked);
+      document.querySelectorAll('#vocab-list .bulk-cb').forEach(cb => cb.checked = checkbox.checked);
     }
 
     async function deleteSelectedCards() {
@@ -2581,6 +2686,8 @@
     // エクスポート形式：単語カードに加え、学習のきろく（活動データ）と週間目標も同梱する
     function exportData(prefix = 'memoria_pro_backup') {
       const payload = {
+        app: APP_NAME,
+        appVersion: APP_VERSION,
         schema: BACKUP_SCHEMA,
         exportedAt: new Date().toISOString(),
         backend: Store.backend,
