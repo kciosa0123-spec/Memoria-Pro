@@ -930,11 +930,14 @@
     }
 
     function normalizeReviewLog(value) {
+      // 評価値は4種に限定。許可外の q を持つエントリは丸ごと除外する
+      // （recentNegatives の集計や AIへ渡す recent に不正値が混入しないように）。
+      const allowed = ['forgot', 'hard', 'good', 'easy'];
       if (!Array.isArray(value)) return [];
       return value
-        .filter(entry => entry && typeof entry === 'object')
+        .filter(entry => entry && typeof entry === 'object' && allowed.includes(entry.q))
         .slice(-REVIEW_LOG_LIMIT)
-        .map(entry => ({ t: normalizeDate(entry.t), q: String(entry.q || '') }));
+        .map(entry => ({ t: normalizeDate(entry.t), q: entry.q }));
     }
 
     function getReviewTime(card) {
@@ -1867,6 +1870,11 @@
     async function handleImport() {
       const jsonString = document.getElementById('import-textarea').value;
 
+      if (!jsonString.trim()) {
+        showToast('JSONが貼り付けられていません。');
+        return;
+      }
+
       try {
         const newCards = parseJsonArray(jsonString);
         const existingCards = Store.all().slice();
@@ -1980,7 +1988,7 @@
       '- id は入力のものをそのまま使う。\n' +
       `- newEfactor は ${EFACTOR_MIN}〜${EFACTOR_MAX}。覚えにくい/誤答が多いほど低く。\n` +
       `- intervalModifier は ${MODIFIER_MIN}〜${MODIFIER_MAX}。間隔を詰めたいほど1.0未満、伸ばしてよいほど1.0超。\n` +
-      '- aiHint は覚えるための日本語ヒント（語源・コロケーション・誤用注意など、120字以内が目安）。\n' +
+      `- aiHint は覚えるための日本語ヒント（語源・コロケーション・誤用注意など、100〜${AI_HINT_MAX_LENGTH}字程度）。\n` +
       '- 範囲外の値はアプリ側で自動的にクランプされます。\n\n' +
       '【評価記号】 forgot=忘れた / hard=難しい / good=普通 / easy=簡単\n' +
       `【recent】 直近の評価（左ほど古い・最大${TUNING_RECENT_WINDOW}件）\n\n` +
