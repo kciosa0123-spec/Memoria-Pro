@@ -497,8 +497,8 @@
 </head>
 <body>
 
-  <nav>
-    <button id="nav-dashboard" class="active-nav" onclick="switchTab('tab-dashboard')">🏠 ホーム</button>
+  <nav aria-label="メインナビゲーション">
+    <button id="nav-dashboard" class="active-nav" aria-current="page" onclick="switchTab('tab-dashboard')">🏠 ホーム</button>
     <button id="nav-list" onclick="switchTab('tab-list')">📋 単語管理</button>
     <button id="nav-import" onclick="switchTab('tab-import')">➕ 追加</button>
     <button id="nav-tuning" onclick="switchTab('tab-tuning')">🔧 AI調整</button>
@@ -509,7 +509,7 @@
   <div class="container">
 
     <div id="tab-dashboard" class="tab-content active">
-      <h2 style="text-align: center;">Memoria (Memoria superat oblivionem) Pro</h2>
+      <h2 style="text-align: center;">Memoria Pro</h2>
 
       <div class="stats-grid">
         <div class="stat-card">
@@ -572,12 +572,12 @@
 
     <div id="tab-learning" class="tab-content">
       <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px; gap: 10px;">
-        <div id="learning-progress" style="font-weight: bold; font-size: 16px;"></div>
+        <div id="learning-progress" style="font-weight: bold; font-size: 16px;" aria-live="polite"></div>
         <button onclick="suspendLearning()" class="btn btn-muted" style="padding: 6px 10px; font-size: 12px;">⏸️ 中断して戻る</button>
       </div>
 
-      <div class="flashcard" id="flashcard-ui">
-        <div class="word-title" id="card-word"></div>
+      <div class="flashcard" id="flashcard-ui" role="group" aria-label="フラッシュカード">
+        <div class="word-title" id="card-word" lang="en" aria-live="polite"></div>
         <div class="badge-row">
           <span class="badge" id="card-pos"></span>
           <span class="badge" id="card-cefr"></span>
@@ -586,15 +586,15 @@
         </div>
 
         <div class="hint-box">
-          <div class="example-text" id="card-hint"></div>
+          <div class="example-text" id="card-hint" lang="en"></div>
         </div>
 
         <button onclick="speakWord()" class="btn" style="background: var(--border); color: var(--text-main); margin-bottom: 20px;">🔊 発音</button>
 
-        <div id="card-back" style="display: none;">
+        <div id="card-back" style="display: none;" aria-live="polite">
           <hr style="border-top: 1px solid var(--border); margin: 20px 0;">
           <div class="meaning-text" id="card-meaning"></div>
-          <div class="example-text" id="card-example"></div>
+          <div class="example-text" id="card-example" lang="en"></div>
           <div class="aihint-text" id="card-aihint"></div>
         </div>
       </div>
@@ -815,6 +815,9 @@
     const REVIEW_LOG_LIMIT = 10;
     const WEAK_LAPSES = 2;
     const WEAK_EFACTOR = 2.0;
+    // 直近の評価をどこまで遡るか。用途が違うため値も別（マジックナンバー化を避けて明示）。
+    const WEAK_RECENT_WINDOW = 4;     // isWeakCard: 直近この件数で誤答(forgot/hard)が2件以上なら苦手扱い
+    const TUNING_RECENT_WINDOW = 6;   // AIへ渡す直近評価の最大件数（チューニング用の参考情報）
 
     let learningQueue = [];
     let currentIndex = 0;
@@ -1207,13 +1210,15 @@
 
       async migrateToLocal() {
         if (this.backend === 'local') return false;
+        const normalized = normalizeAll(this.cache);  // replaceAll と同じく正規化してから書く
         try {
-          lsReplaceAll(this.cache); // 容量に収まるか試す
+          lsReplaceAll(normalized); // 容量に収まるか試す
         } catch (error) {
           throw new Error('localStorageの容量（約5MB）に収まりません。語数を減らしてから再試行してください。');
         }
         localStorage.setItem(BACKEND_PREF_KEY, 'local');
         this.backend = 'local';
+        this.cache = normalized;
         return true;
       }
     };
@@ -1415,6 +1420,8 @@
 
       if ('speechSynthesis' in window) {
         speechSynthesis.getVoices();
+        // 一部ブラウザはボイスを非同期ロードするため、更新時に取り直して暖機しておく
+        speechSynthesis.addEventListener('voiceschanged', () => { speechSynthesis.getVoices(); });
       }
     };
 
@@ -1422,14 +1429,21 @@
       document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
       document.getElementById(tabId).classList.add('active');
 
-      document.querySelectorAll('nav button').forEach(btn => btn.classList.remove('active-nav'));
+      document.querySelectorAll('nav button').forEach(btn => {
+        btn.classList.remove('active-nav');
+        btn.removeAttribute('aria-current');
+      });
       const navMap = {
         'tab-dashboard': 'nav-dashboard',
         'tab-list': 'nav-list',
         'tab-import': 'nav-import',
         'tab-tuning': 'nav-tuning'
       };
-      if (navMap[tabId]) document.getElementById(navMap[tabId]).classList.add('active-nav');
+      if (navMap[tabId]) {
+        const navBtn = document.getElementById(navMap[tabId]);
+        navBtn.classList.add('active-nav');
+        navBtn.setAttribute('aria-current', 'page');
+      }
 
       if (tabId === 'tab-dashboard') updateDashboard();
       if (tabId === 'tab-list') {
@@ -1458,7 +1472,7 @@
     }
 
     function recentNegatives(card) {
-      const log = Array.isArray(card.reviewLog) ? card.reviewLog.slice(-4) : [];
+      const log = Array.isArray(card.reviewLog) ? card.reviewLog.slice(-WEAK_RECENT_WINDOW) : [];
       return log.filter(entry => entry && (entry.q === 'forgot' || entry.q === 'hard')).length;
     }
 
@@ -1509,7 +1523,8 @@
               const t = getReviewTime(a) - getReviewTime(b);
               if (t !== 0) return t;
               return (b.importance || 3) - (a.importance || 3);
-            });
+            })
+            .map(card => card.id);
           break;
 
         case 'new':
@@ -1519,13 +1534,15 @@
               if ((b.importance || 3) !== (a.importance || 3)) return (b.importance || 3) - (a.importance || 3);
               return (a.createdAt || 0) - (b.createdAt || 0);
             })
-            .slice(0, 10);
+            .slice(0, 10)
+            .map(card => card.id);
           break;
 
         case 'weak':
           learningQueue = allCards
             .filter(isWeakCard)
-            .sort((a, b) => (b.lapses || 0) - (a.lapses || 0));
+            .sort((a, b) => (b.lapses || 0) - (a.lapses || 0))
+            .map(card => card.id);
           break;
       }
 
@@ -1591,6 +1608,16 @@
     }
 
     function showNextCard() {
+      // キューにはカードIDだけが積まれている。常にStoreから最新の実体を引き直す
+      // （セッション中に編集・AI調整・再出題されても、古いスナップショットを掴まない）。
+      while (currentIndex < learningQueue.length) {
+        const id = learningQueue[currentIndex];
+        const card = Store.all().find(c => c.id === id);
+        if (card) { currentCard = card; break; }
+        // 学習中に削除されたカードはスキップ
+        currentIndex++;
+      }
+
       if (currentIndex >= learningQueue.length) {
         showToast('🎉 このセッションの学習が完了しました！お疲れ様でした。');
         currentCard = null;
@@ -1599,8 +1626,6 @@
         switchTab('tab-dashboard');
         return;
       }
-
-      currentCard = learningQueue[currentIndex];
 
       updateLearningProgressText();
       document.getElementById('card-word').textContent = currentCard.word;
@@ -1630,16 +1655,55 @@
       document.getElementById('card-aihint').style.display = currentCard.aiHint ? 'block' : 'none';
     }
 
+    // 英語ボイスは非同期ロードのことがある。利用可能なら明示的に英語ボイスを選ぶ。
+    function pickEnglishVoice() {
+      if (!('speechSynthesis' in window)) return null;
+      const voices = speechSynthesis.getVoices() || [];
+      if (voices.length === 0) return null;
+      // en-US を最優先、なければ任意の en、最後に既定（null）
+      return voices.find(v => /^en[-_]US/i.test(v.lang))
+        || voices.find(v => /^en/i.test(v.lang))
+        || null;
+    }
+
+    function speakUtterance(text) {
+      speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'en-US';
+      const voice = pickEnglishVoice();
+      if (voice) utterance.voice = voice;  // 未ロード時は lang 指定のみでブラウザに委ねる
+      speechSynthesis.speak(utterance);
+    }
+
     function speakWord() {
       if (!currentCard) return;
       if (!('speechSynthesis' in window)) {
         alert('このブラウザでは音声読み上げに対応していません。');
         return;
       }
-      speechSynthesis.cancel();
-      const utterance = new SpeechSynthesisUtterance(currentCard.word);
-      utterance.lang = 'en-US';
-      speechSynthesis.speak(utterance);
+      const word = currentCard.word;
+      const voices = speechSynthesis.getVoices() || [];
+
+      // 初回クリックでボイス未ロードなら、voiceschanged を一度だけ待ってから読み上げる。
+      // それでも発火しないブラウザ向けに、lang 指定のみで即時にも試す。
+      if (voices.length === 0) {
+        let spoken = false;
+        const onVoices = () => {
+          if (spoken) return;
+          spoken = true;
+          speakUtterance(word);
+        };
+        speechSynthesis.addEventListener('voiceschanged', onVoices, { once: true });
+        // フォールバック：voiceschanged が来ないブラウザでも一応読み上げる
+        setTimeout(() => {
+          if (spoken) return;
+          spoken = true;
+          speakUtterance(word);
+        }, 250);
+        return;
+      }
+
+      speakUtterance(word);
     }
 
     function addDaysFromNow(days) {
@@ -1720,7 +1784,7 @@
         recordActivity();
 
         if (evaluation === 'forgot') {
-          learningQueue.push({ ...currentCard });
+          learningQueue.push(currentCard.id);   // IDだけ積む（再出題時にStoreから最新を引き直す）
           sessionRequeuedCount++;
         }
 
@@ -1917,7 +1981,7 @@
       '- aiHint は覚えるための短い日本語ヒント（語源・コロケーション・誤用注意など、40字以内）。\n' +
       '- 範囲外の値はアプリ側で自動的にクランプされます。\n\n' +
       '【評価記号】 forgot=忘れた / hard=難しい / good=普通 / easy=簡単\n' +
-      '【recent】 直近の評価（左ほど古い）\n\n' +
+      `【recent】 直近の評価（左ほど古い・最大${TUNING_RECENT_WINDOW}件）\n\n` +
       '【苦手カード】';
 
     function getStrugglingCards() {
@@ -1934,7 +1998,7 @@
         intervalModifier: card.intervalModifier,
         repetition: card.repetition,
         lapses: card.lapses,
-        recent: (card.reviewLog || []).slice(-6).map(entry => entry.q)
+        recent: (card.reviewLog || []).slice(-TUNING_RECENT_WINDOW).map(entry => entry.q)
       }));
     }
 
