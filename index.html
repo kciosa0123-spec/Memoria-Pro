@@ -2600,9 +2600,11 @@
         throw new Error('無効なデータ形式です。JSON配列ではありません。');
       }
 
+      // id は必須にしない。欠落・重複はこの後 dedupeCardIds() で補正するため、
+      // ここでは word / meaning だけを検証する（Lite形式や簡易バックアップも受け取れるように）。
       const invalidIndex = importedData.findIndex(card =>
         !card || typeof card !== 'object' ||
-        !('id' in card) || !('word' in card) || !('meaning' in card) ||
+        !('word' in card) || !('meaning' in card) ||
         typeof card.word !== 'string' || typeof card.meaning !== 'string' ||
         card.word.trim() === '' || card.meaning.trim() === ''
       );
