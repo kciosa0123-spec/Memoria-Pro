@@ -1556,7 +1556,14 @@
         case 'weak':
           learningQueue = allCards
             .filter(isWeakCard)
-            .sort((a, b) => (b.lapses || 0) - (a.lapses || 0))
+            .sort((a, b) => {
+              const byLapses = (b.lapses || 0) - (a.lapses || 0);   // 苦手回数が多い順
+              if (byLapses !== 0) return byLapses;
+              const ea = a.efactor !== undefined ? a.efactor : 2.5;
+              const eb = b.efactor !== undefined ? b.efactor : 2.5;
+              if (ea !== eb) return ea - eb;                        // efactorが低い（=より苦手）順
+              return getReviewTime(a) - getReviewTime(b);           // 同値は復習予定が早い順（決定的）
+            })
             .map(card => card.id);
           break;
       }
@@ -2219,7 +2226,7 @@
 
       // 再描画でチェック状態が消えないよう、現在の選択（表示中のみ）を退避して復元する
       const checkedIds = new Set(
-        Array.from(document.querySelectorAll('.bulk-cb:checked')).map(cb => cb.value)
+        Array.from(document.querySelectorAll('#vocab-list .bulk-cb:checked')).map(cb => cb.value)
       );
 
       const listElement = document.getElementById('vocab-list');
@@ -2516,13 +2523,15 @@
     }
 
     async function deleteSelectedCards() {
-      const checkedBoxes = document.querySelectorAll('.bulk-cb:checked');
+      const checkedBoxes = document.querySelectorAll('#vocab-list .bulk-cb:checked');
       if (checkedBoxes.length === 0) {
         showToast('削除する単語が選択されていません。');
         return;
       }
       if (!confirm(
         `選択した ${checkedBoxes.length} 件の単語を削除します。\n\n` +
+        `※ 削除されるのは、いま画面に表示されている中で選択した分のみです。\n` +
+        `　「さらに表示」で隠れているカードは対象になりません。\n\n` +
         `この操作は元に戻せません。\n` +
         `削除前にバックアップを取っていない場合は、キャンセルしてください。`
       )) return;
