@@ -509,7 +509,7 @@
   <div class="container">
 
     <div id="tab-dashboard" class="tab-content active">
-      <h2 style="text-align: center;">Memoria Pro</h2>
+      <h2 style="text-align: center;">Memoria (Memoria superat oblivionem) Pro</h2>
 
       <div class="stats-grid">
         <div class="stat-card">
@@ -626,6 +626,12 @@
         <button onclick="exportData()" class="btn btn-primary" style="margin: 6px 0 10px; width: 100%;">⬇️ 全データをエクスポート JSON</button>
         <input type="file" id="import-file" accept=".json,application/json" style="display: none;" onchange="importBackup(event)">
         <button onclick="document.getElementById('import-file').click()" class="btn btn-danger" style="width: 100%;">⬆️ バックアップから復元 完全上書き</button>
+      </div>
+
+      <div class="panel">
+        <h3 style="margin-top: 0;">↪️ Lite版からデータを取り込む</h3>
+        <p class="small-note">Pro と Lite は保存領域が分かれています（自動共有はされません）。同じブラウザに残っている Lite 版のデータ（単語・学習のきろく・週間目標）を、このボタンで Pro へ取り込めます。重複する単語は除外され、既存の Pro データは削除されません（マージのみ）。</p>
+        <button onclick="migrateLiteToPro()" class="btn btn-secondary" style="width: 100%;">↪️ Lite版データをProへ移行</button>
       </div>
 
       <div class="panel">
@@ -775,18 +781,26 @@
     // ==========================================
     // 基本設定
     // ==========================================
-    const STORAGE_KEY = 'my_vocab_cards';
-    const STORAGE_WARNING_DATE_KEY = 'my_vocab_storage_warning_date';
-    const STORAGE_SCHEMA_VERSION_KEY = 'my_vocab_schema_version';
-    const BACKEND_PREF_KEY = 'my_vocab_backend';   // 'local' | 'idb'
+    // Pro専用の名前空間（memoria_pro_*）。Lite版（my_vocab_*）と保存領域を分離し、
+    // 同じブラウザで併用してもデータ・スキーマが干渉しないようにする。
+    const STORAGE_KEY = 'memoria_pro_cards';
+    const STORAGE_WARNING_DATE_KEY = 'memoria_pro_storage_warning_date';
+    const STORAGE_SCHEMA_VERSION_KEY = 'memoria_pro_schema_version';
+    const BACKEND_PREF_KEY = 'memoria_pro_backend';   // 'local' | 'idb'
     const CURRENT_SCHEMA_VERSION = '3';            // 2 -> 3: aiDifficulty / intervalModifier / aiHint / reviewLog 追加
     const LOCAL_STORAGE_LIMIT_BYTES = 5 * 1024 * 1024;
     const MAX_IMPORT_DETAIL_ITEMS = 30;
 
     // 学習のきろく・バックアップ
-    const ACTIVITY_STORAGE_KEY = 'my_vocab_activity';
-    const WEEKLY_GOAL_KEY = 'my_vocab_weekly_goal';
+    const ACTIVITY_STORAGE_KEY = 'memoria_pro_activity';
+    const WEEKLY_GOAL_KEY = 'memoria_pro_weekly_goal';
     const BACKUP_SCHEMA = 'memoria_pro_backup_v1';
+
+    // Lite版（旧共有）データの読み取り元キー。取り込み（移行）専用で、Proがここへ書き込むことはない。
+    const LEGACY_STORAGE_KEY = 'my_vocab_cards';
+    const LEGACY_ACTIVITY_KEY = 'my_vocab_activity';
+    const LEGACY_WEEKLY_GOAL_KEY = 'my_vocab_weekly_goal';
+    const LEGACY_HINT_SHOWN_KEY = 'memoria_pro_legacy_hint_shown';
 
     // IndexedDB
     const DB_NAME = 'memoria_pro_db';
@@ -1397,6 +1411,7 @@
       updateDashboard();
       updateStorageDisplay();
       warnIfLocalNearLimit();
+      maybeHintLegacyLiteData();
 
       if ('speechSynthesis' in window) {
         speechSynthesis.getVoices();
@@ -2375,6 +2390,107 @@
         alert(error && error.message ? error.message : 'localStorageへの切り替えに失敗しました。');
       }
       updateStorageDisplay();
+    }
+
+    // ==========================================
+    // Lite版データの取り込み（自動共有はせず、明示的なボタンで実行）
+    //   Lite版は localStorage の旧キー（my_vocab_*）を使う。そこから読み取り、
+    //   Proの現在の保存先（local / idb）へ非破壊マージする。既存Proデータは消さない。
+    // ==========================================
+    function readLegacyLiteCards() {
+      try {
+        const raw = localStorage.getItem(LEGACY_STORAGE_KEY);
+        const parsed = raw ? JSON.parse(raw) : [];
+        return Array.isArray(parsed) ? parsed : [];
+      } catch (_) { return []; }
+    }
+
+    function readLegacyLiteActivity() {
+      try {
+        const d = JSON.parse(localStorage.getItem(LEGACY_ACTIVITY_KEY) || '{}');
+        return (d && typeof d === 'object') ? d : {};
+      } catch (_) { return {}; }
+    }
+
+    function hasLegacyLiteData() {
+      if (readLegacyLiteCards().length > 0) return true;
+      if (Object.keys(sanitizeActivityData(readLegacyLiteActivity())).length > 0) return true;
+      if (sanitizeWeeklyGoal(localStorage.getItem(LEGACY_WEEKLY_GOAL_KEY)) !== null) return true;
+      return false;
+    }
+
+    // Pro起動時、Proが空でLite版データが残っているときだけ一度だけ案内（取り込みは自動では行わない）
+    function maybeHintLegacyLiteData() {
+      try {
+        if (Store.all().length > 0) return;
+        if (!hasLegacyLiteData()) return;
+        if (localStorage.getItem(LEGACY_HINT_SHOWN_KEY)) return;
+        safeSetItem(LEGACY_HINT_SHOWN_KEY, '1');
+        showToast('Lite版のデータが見つかりました。「単語管理」→「Lite版データをProへ移行」で取り込めます。', 6000);
+      } catch (_) {}
+    }
+
+    async function migrateLiteToPro() {
+      const legacyCards = normalizeAll(readLegacyLiteCards());  // Proスキーマへ正規化（aiDifficulty等は既定値で補完）
+      const legacyActivity = sanitizeActivityData(readLegacyLiteActivity());
+      const legacyGoal = sanitizeWeeklyGoal(localStorage.getItem(LEGACY_WEEKLY_GOAL_KEY));
+      const activityDays = Object.keys(legacyActivity).length;
+
+      if (legacyCards.length === 0 && activityDays === 0 && legacyGoal === null) {
+        showToast('取り込めるLite版のデータが見つかりませんでした。');
+        return;
+      }
+
+      if (!confirm(
+        `Lite版のデータが見つかりました。\n` +
+        `・単語: ${legacyCards.length}件\n` +
+        `・学習のきろく: ${activityDays}日分\n` +
+        `・週間目標: ${legacyGoal !== null ? legacyGoal + '枚' : '（なし）'}\n\n` +
+        `これらをProへ取り込みます。重複する単語は除外され、既存のProデータは削除されません（マージのみ）。\n` +
+        `続けますか？`
+      )) return;
+
+      // --- 単語：word+品詞+意味 が重複するものを除いてマージ。idは新規採番して衝突を防ぐ ---
+      const existing = Store.all().slice();
+      const existingKeys = new Set(existing.map(makeDuplicateKey));
+      let added = 0;
+      let skipped = 0;
+      legacyCards.forEach(card => {
+        const key = makeDuplicateKey(card);
+        if (existingKeys.has(key)) { skipped++; return; }
+        existing.push({ ...card, id: generateId() });
+        existingKeys.add(key);
+        added++;
+      });
+
+      const ok = await Store.replaceAll(existing);
+      if (!ok) return;
+
+      // --- 学習のきろく：日ごとに大きい方を採用（既存Proの記録を減らさない・二重計上も避ける） ---
+      let activityMerged = false;
+      if (activityDays > 0) {
+        const current = sanitizeActivityData(getActivityData());
+        Object.keys(legacyActivity).forEach(day => {
+          current[day] = Math.max(current[day] || 0, legacyActivity[day]);
+        });
+        if (safeSetItem(ACTIVITY_STORAGE_KEY, JSON.stringify(current))) activityMerged = true;
+      }
+
+      // --- 週間目標：Proがまだ設定していない場合のみ採用（既存設定は尊重） ---
+      if (legacyGoal !== null && !localStorage.getItem(WEEKLY_GOAL_KEY)) {
+        safeSetItem(WEEKLY_GOAL_KEY, String(legacyGoal));
+      }
+
+      populateCefrFilter();
+      renderVocabList();
+      updateDashboard();        // ヒートマップ・週間目標バーも再描画
+      updateStorageDisplay();
+      warnIfLocalNearLimit();
+
+      const parts = [`単語 +${added}件`];
+      if (skipped > 0) parts.push(`重複 ${skipped}件スキップ`);
+      if (activityMerged) parts.push('学習のきろくも統合');
+      showToast('✅ 取り込み完了：' + parts.join('・'));
     }
 
     // ==========================================
