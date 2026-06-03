@@ -637,7 +637,7 @@
       <div class="panel">
         <h3 style="margin-top: 0;">登録済み単語 <span id="total-words">0</span>件</h3>
         <div class="filters">
-          <input type="search" id="search-input" class="filter-search" placeholder="単語・意味・例文・ヒントで検索" oninput="resetListPaging()">
+          <input type="search" id="search-input" class="filter-search" placeholder="単語・意味・例文・ヒントで検索" oninput="debouncedResetListPaging()">
           <select id="status-filter" onchange="resetListPaging()">
             <option value="all">全状態</option>
             <option value="new">new</option>
@@ -866,6 +866,21 @@
     function generateId() {
       return Date.now().toString() + '_' + Math.random().toString(36).substring(2, 9);
     }
+
+    // 入力が連続している間は処理を待機し、入力が止まってから一度だけ実行する
+    function debounce(func, wait) {
+      let timeout;
+      return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+      };
+    }
+
+    // 検索入力のデバウンス（数千語でも1文字ごとの全件ループでカクつかないように）
+    const SEARCH_DEBOUNCE_MS = 300;
+    const _debouncedResetListPaging = debounce(() => resetListPaging(), SEARCH_DEBOUNCE_MS);
+    // インラインの oninput から確実に呼べるよう、関数宣言として公開する
+    function debouncedResetListPaging() { _debouncedResetListPaging(); }
 
     function safeNumber(value, fallback) {
       const num = Number(value);
@@ -1440,6 +1455,7 @@
     };
 
     function switchTab(tabId) {
+      window.scrollTo(0, 0);   // タブ移動時は先頭へ
       document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
       document.getElementById(tabId).classList.add('active');
 
