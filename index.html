@@ -31,6 +31,13 @@
       --backend-pill-bg: #DBEAFE;
       --backend-pill-txt: #1E40AF;
       --hint-box-bg: #F3F4F6;
+      --input-bg: #FFFFFF;
+      --input-border: var(--border);
+      --hm-1: #A7F3D0;
+      --hm-2: #34D399;
+      --hm-3: #059669;
+      --toast-bg: rgba(17, 24, 39, 0.9);
+      --toast-txt: #F9FAFB;
     }
 
     /* ==========================================
@@ -54,12 +61,14 @@
         --backend-pill-bg: #1E3A8A;
         --backend-pill-txt: #DBEAFE;
         --hint-box-bg: #374151;
+        --input-bg: #374151;
+        --input-border: #4B5563;
+        --hm-1: #065F46;
+        --hm-2: #047857;
+        --hm-3: #10B981;
+        --toast-bg: rgba(249, 250, 251, 0.9);
+        --toast-txt: #111827;
       }
-      input, select, textarea { background-color: #374151; color: #F9FAFB; border-color: #4B5563; }
-      .heatmap-cell.level-1 { background-color: #065F46; }
-      .heatmap-cell.level-2 { background-color: #047857; }
-      .heatmap-cell.level-3 { background-color: #10B981; }
-      .toast { background: rgba(249, 250, 251, 0.9); color: #111827; }
     }
 
     * { box-sizing: border-box; }
@@ -201,9 +210,9 @@
 
     /* ヒートマップ（学習のきろく） */
     .heatmap-cell { width: 14px; height: 14px; border-radius: 3px; background-color: var(--border); flex-shrink: 0; position: relative; }
-    .heatmap-cell.level-1 { background-color: #A7F3D0; }
-    .heatmap-cell.level-2 { background-color: #34D399; }
-    .heatmap-cell.level-3 { background-color: #059669; }
+    .heatmap-cell.level-1 { background-color: var(--hm-1); }
+    .heatmap-cell.level-2 { background-color: var(--hm-2); }
+    .heatmap-cell.level-3 { background-color: var(--hm-3); }
     .heatmap-cell[data-tooltip]:hover::after { content: attr(data-tooltip); position: absolute; bottom: calc(100% + 4px); left: 50%; transform: translateX(-50%); background: rgba(0,0,0,0.8); color: white; padding: 4px 8px; border-radius: 4px; font-size: 11px; white-space: nowrap; pointer-events: none; z-index: 10; }
 
     .flashcard {
@@ -295,22 +304,25 @@
       height: 210px;
       padding: 12px;
       border-radius: 8px;
-      border: 1px solid var(--border);
+      border: 1px solid var(--input-border);
       box-sizing: border-box;
       margin-bottom: 10px;
       font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
       font-size: 13px;
       resize: vertical;
+      background: var(--input-bg);
+      color: var(--text-main);
     }
 
     textarea.short { height: 150px; }
 
     input, select {
       padding: 9px 10px;
-      border: 1px solid var(--border);
+      border: 1px solid var(--input-border);
       border-radius: 8px;
       font-size: 14px;
-      background: white;
+      background: var(--input-bg);
+      color: var(--text-main);
     }
 
     .filters {
@@ -476,7 +488,7 @@
 
     /* トースト通知 */
     #toast-container { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); display: flex; flex-direction: column; gap: 10px; z-index: 9999; pointer-events: none; }
-    .toast { background: rgba(17, 24, 39, 0.9); color: #F9FAFB; padding: 12px 24px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); font-size: 14px; font-weight: 600; opacity: 0; transform: translateY(20px); animation: toastEnter 0.3s forwards, toastLeave 0.3s forwards 2.7s; }
+    .toast { background: var(--toast-bg); color: var(--toast-txt); padding: 12px 24px; border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15); font-size: 14px; font-weight: 600; opacity: 0; transform: translateY(20px); animation: toastEnter 0.3s forwards, toastLeave 0.3s forwards 2.7s; }
     @keyframes toastEnter { to { opacity: 1; transform: translateY(0); } }
     @keyframes toastLeave { to { opacity: 0; transform: translateY(20px); } }
 
@@ -1152,7 +1164,14 @@
 
       async init() {
         const pref = localStorage.getItem(BACKEND_PREF_KEY);
-        if (pref === 'idb' && idbAvailable()) {
+        if (pref === 'idb') {
+          if (!idbAvailable()) {
+            console.warn('IndexedDBが利用できないため、localStorageのスナップショットを表示します。');
+            alert('⚠️ IndexedDBを利用できません。\nプライベートブラウズやブラウザ設定の影響で、保存先にアクセスできない可能性があります。localStorageの移行前スナップショットを表示しますが、直近の変更が反映されていない可能性があります。');
+            this.backend = 'local';
+            this.cache = normalizeAll(lsLoadAll());
+            return;
+          }
           try {
             this.db = await openDatabase();
             this.cache = normalizeAll(await idbGetAll(this.db));
@@ -1455,39 +1474,50 @@
     };
 
     function switchTab(tabId) {
-      window.scrollTo(0, 0);   // タブ移動時は先頭へ
-      document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
-      document.getElementById(tabId).classList.add('active');
+      try {
+        window.scrollTo(0, 0);   // タブ移動時は先頭へ
+        document.querySelectorAll('.tab-content').forEach(tab => tab.classList.remove('active'));
+        const targetTab = document.getElementById(tabId);
+        if (!targetTab) throw new Error(`指定されたタブが見つかりません: ${tabId}`);
+        targetTab.classList.add('active');
 
-      document.querySelectorAll('nav button').forEach(btn => {
-        btn.classList.remove('active-nav');
-        btn.removeAttribute('aria-current');
-      });
-      const navMap = {
-        'tab-dashboard': 'nav-dashboard',
-        'tab-list': 'nav-list',
-        'tab-import': 'nav-import',
-        'tab-tuning': 'nav-tuning'
-      };
-      if (navMap[tabId]) {
-        const navBtn = document.getElementById(navMap[tabId]);
-        navBtn.classList.add('active-nav');
-        navBtn.setAttribute('aria-current', 'page');
-      }
+        document.querySelectorAll('nav button').forEach(btn => {
+          btn.classList.remove('active-nav');
+          btn.removeAttribute('aria-current');
+        });
+        const navMap = {
+          'tab-dashboard': 'nav-dashboard',
+          'tab-list': 'nav-list',
+          'tab-import': 'nav-import',
+          'tab-tuning': 'nav-tuning'
+        };
+        if (navMap[tabId]) {
+          const navBtn = document.getElementById(navMap[tabId]);
+          if (navBtn) {
+            navBtn.classList.add('active-nav');
+            navBtn.setAttribute('aria-current', 'page');
+          }
+        }
 
-      if (tabId === 'tab-dashboard') updateDashboard();
-      if (tabId === 'tab-list') {
-        populateCefrFilter();
-        listVisibleCount = LIST_PAGE_SIZE;   // 一覧を開くたび先頭から表示
-        renderVocabList();
-        updateStorageDisplay();
-      }
-      if (tabId === 'tab-import') {
-        document.getElementById('import-result').style.display = 'none';
-      }
-      if (tabId === 'tab-tuning') {
-        document.getElementById('tuning-result').style.display = 'none';
-        refreshTuningCount();
+        if (tabId === 'tab-dashboard') updateDashboard();
+        if (tabId === 'tab-list') {
+          populateCefrFilter();
+          listVisibleCount = LIST_PAGE_SIZE;   // 一覧を開くたび先頭から表示
+          renderVocabList();
+          updateStorageDisplay();
+        }
+        if (tabId === 'tab-import') {
+          const importResult = document.getElementById('import-result');
+          if (importResult) importResult.style.display = 'none';
+        }
+        if (tabId === 'tab-tuning') {
+          const tuningResult = document.getElementById('tuning-result');
+          if (tuningResult) tuningResult.style.display = 'none';
+          refreshTuningCount();
+        }
+      } catch (e) {
+        console.error('タブ切り替えエラー:', e);
+        alert('画面の切り替え中にエラーが発生しました。\n再読み込みをお試しください。');
       }
     }
 
@@ -1609,8 +1639,10 @@
         currentCard = null;
         sessionInitialCount = 0;
         sessionRequeuedCount = 0;
+        isEvaluating = false;
         if ('speechSynthesis' in window) speechSynthesis.cancel();
         switchTab('tab-dashboard');
+        showToast('学習を中断しました。');
       }
     }
 
